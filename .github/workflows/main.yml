@@ -1,5 +1,4 @@
-cat > .github/workflows/build_windows_exe.yml << 'EOF'
-name: Build Windows Executable
+name: Build Windows Executable and Release
 
 on:
   push:
@@ -21,15 +20,31 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas openpyxl PyQt5 pyinstaller
+          pip install pandas openpyxl fastapi uvicorn pyinstaller
 
       - name: Build executable
         run: |
           pyinstaller --onefile --windowed --name LeaveBalance leave_calculator.py
 
-      - name: Upload executable artifact
+      - name: Upload executable artifact (for manual download)
         uses: actions/upload-artifact@v4
         with:
           name: LeaveBalance-Windows
           path: dist/LeaveBalance.exe
-EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v2.4
+          name: "Leave Balance Calculator v2.4"
+          body: |
+            **Portable Windows executable**  
+            Download `LeaveBalance.exe` and place it in a folder together with the required data files (`employees.xlsx`, `balance_2025.xlsx`, `holidays.xlsx`, `attendance_2026/`, etc.).  
+            Double‑click to start the server on port 8000, then open `http://localhost:8000`.
+
+            Built automatically from the latest code on the `main` branch.
+          files: dist/LeaveBalance.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
