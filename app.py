@@ -59,11 +59,10 @@ def load_all_data():
         employees['Name'] = 'Unknown'
     if 'Title' not in employees.columns:
         employees['Title'] = ''
-    # Queue from employees file: keep as is, only fill from attendance if missing
-    if 'Q' in employees.columns:
-        employees.rename(columns={'Q': 'Queue'}, inplace=True)
-    if 'Queue' not in employees.columns:
-        employees['Queue'] = ''
+    # Keep LOB and S-LOB as they are (do not rename)
+    for col in ['LOB', 'S-LOB']:
+        if col not in employees.columns:
+            employees[col] = ''
 
     balance_2025 = pd.read_excel(BALANCE_2025_FILE)
     if 'Annual_Used' in balance_2025.columns:
@@ -105,16 +104,16 @@ def load_all_data():
         att_list.append(df)
     attendance = pd.concat(att_list, ignore_index=True)
 
-    # Queue: fill employees missing Queue with attendance value, otherwise keep original
+    # fill queue from attendance only if missing (not needed anymore, but keep for Go Live logic)
     if 'queue' in attendance.columns and 'acd_id' in attendance.columns:
         first_att = attendance.sort_values('Date').groupby('acd_id').first().reset_index()
         first_att = first_att[['acd_id', 'queue']]
         employees['acd_str'] = employees['acd_id'].astype(str).str.strip()
         first_att['acd_str'] = first_att['acd_id'].astype(str).str.strip()
         employees = employees.merge(first_att[['acd_str', 'queue']], on='acd_str', how='left', suffixes=('', '_att'))
-        # Keep original employee Queue if available, otherwise use attendance queue
-        employees['Queue'] = employees['Queue'].fillna(employees['queue']).fillna('')
-        employees.drop(columns=['queue'], inplace=True)
+        # Go Live calculation uses Queue (from employees or attendance). Keep a unified 'Queue' column for that.
+        employees['Queue'] = employees.get('queue', pd.Series(dtype=str)).fillna('')
+        employees.drop(columns=['queue'], inplace=True, errors='ignore')
 
     def calc_go_live(row):
         cert = row.get('certification_date')
@@ -129,7 +128,6 @@ def load_all_data():
             return cert + timedelta(days=1)
     employees['go_live'] = employees.apply(calc_go_live, axis=1)
 
-    # Link: ACD ID + Date of Join (unique even if ACD reused) → UAE ID (unique)
     attendance['acd_str'] = attendance['acd_id'].astype(str).str.strip()
     valid_dates = attendance['date_of_join'].notna()
     attendance.loc[valid_dates, 'join_key'] = (
@@ -177,8 +175,9 @@ def load_all_data():
     comp_days = comp_days.merge(employees[['uae_id', 'go_live']], on='uae_id', how='left')
     comp_used = comp_days[comp_days['Date'] >= comp_days['go_live']].groupby('uae_id').size().reset_index(name='comp_days_used')
 
+    # Include LOB and S-LOB in emp_master
     emp_master = employees[['uae_id', 'hiring_date', 'lwd', 'go_live', 'certification_date',
-                            'Queue', 'acd_id', 'Name', 'Title']].copy()
+                            'LOB', 'S-LOB', 'acd_id', 'Name', 'Title']].copy()
     emp_master['calc_date'] = emp_master['lwd'].fillna(pd.Timestamp(CUTOFF_DATE))
 
     def calc_entitlement(row):
@@ -223,7 +222,6 @@ def load_all_data():
 # ========== FastAPI App ==========
 app = FastAPI(title="Leave Balance Calculator", version="2.4")
 
-# Serve static files (icon) from the project folder
 app.mount("/static", StaticFiles(directory=BASE_DIR), name="static")
 
 final_df, attendance_df, holidays_df, not_eligible_shifts = load_all_data()
@@ -261,6 +259,26 @@ async def home(request: Request):
         justify-content: center;
         align-items: center;
         padding: 20px;
+      }
+      .toast {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #2c3e50;
+        color: white;
+        padding: 16px 24px;
+        border-radius: 12px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        z-index: 9999;
+        animation: slideIn 0.5s ease, fadeOut 0.5s 7s ease forwards;
+        font-weight: 500;
+      }
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes fadeOut {
+        to { opacity: 0; visibility: hidden; }
       }
       .card {
         max-width: 950px;
@@ -365,6 +383,10 @@ async def home(request: Request):
     </style>
     </head>
     <body>
+
+    <!-- Toast container -->
+    <div id="toast" class="toast hidden"></div>
+
     <div class="card">
       <div class="header">
         <img src="/static/creativity.png" alt="Logo">
@@ -394,7 +416,23 @@ async def home(request: Request):
         Version 2.4
       </div>
     </div>
+
     <script>
+    // ========== Welcome Toast (generic, 7 seconds) ==========
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.remove("hidden");
+      void toast.offsetWidth; // reflow to restart animation
+      toast.style.animation = "slideIn 0.5s ease, fadeOut 0.5s 7s ease forwards";
+    }
+
+    // Show welcome toast on load
+    window.addEventListener("DOMContentLoaded", () => {
+      showToast("👋 Welcome to the Leave Balance Calculator!");
+    });
+
+    // ========== Main App Functions ==========
     let currentUid = '';
 
     async function calculate() {
@@ -414,13 +452,14 @@ async def home(request: Request):
       currentUid = data.uae_id;
 
       let report = `╔══════════════════════════════════════╗
-║   Leave Balance Report - Law 14/2025  ║
+║   Leave Balance Report - Law 14/2025 ║
 ╚══════════════════════════════════════╝
 👤 UAE ID      : ${data.uae_id}
 🆔 ACD ID      : ${data.acd_id ?? '?'}
 📛 Name        : ${data.Name ?? '?'}
 🏷️  Title       : ${data.Title ?? ''}
-📡 Queue (Q)   : ${data.Queue ?? ''}
+📡 LOB         : ${data.LOB ?? ''}
+📡 S-LOB       : ${data['S-LOB'] ?? ''}
 ──────────────────────────────────────
 📅 Hiring Date : ${data.hiring_date_display ?? '?'}
 📜 Certified   : ${data.certification_date_display ?? '?'}
@@ -465,7 +504,6 @@ async def home(request: Request):
 
     async function shutdown() {
       if (confirm("Shutdown the server? A thank-you page will appear and the server will stop.")) {
-        // Show a thank-you message first
         document.body.innerHTML = `
           <div style="display:flex; justify-content:center; align-items:center; height:100vh; background:linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);">
             <div style="text-align:center; background:white; padding:60px; border-radius:20px; box-shadow:0 20px 40px rgba(0,0,0,0.1);">
@@ -475,12 +513,10 @@ async def home(request: Request):
             </div>
           </div>
         `;
-        // Send shutdown request to server
         fetch('/shutdown');
-        // Wait a moment for the server to process, then try to close tab
         setTimeout(() => {
           window.close();
-        }, 2000);
+        }, 27000); // 27 seconds
       }
     }
     </script>
@@ -535,9 +571,7 @@ async def holiday_details(uae_id: str):
 
 @app.get("/shutdown")
 async def shutdown():
-    """Show a thank-you page and shut down the server after a short delay."""
     import os as _os
-    # Wait 1 second to ensure the response is sent, then exit
     threading.Thread(target=lambda: (time.sleep(1), _os._exit(0))).start()
     return HTMLResponse(content="""
     <html><body style="margin:0; padding:0;">
