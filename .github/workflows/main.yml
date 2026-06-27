@@ -3,48 +3,46 @@ name: Build Windows Executable and Release
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # allows manual trigger
+  workflow_dispatch:   # يسمح بالتشغيل اليدوي
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write          # 🟢 يمنح صلاحية إنشاء إصدار (Release)
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: تثبيت بايثون
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: تثبيت المكتبات المطلوبة
         run: |
           python -m pip install --upgrade pip
           pip install pandas openpyxl fastapi uvicorn pyinstaller
 
-      - name: Build executable
+      - name: بناء الملف التنفيذي
         run: |
           pyinstaller --onefile --windowed --name LeaveBalance leave_calculator.py
 
-      - name: Upload executable artifact (for manual download)
+      - name: رفع الملف التنفيذي كقطعة أثرية (للتحميل اليدوي)
         uses: actions/upload-artifact@v4
         with:
           name: LeaveBalance-Windows
           path: dist/LeaveBalance.exe
 
-      - name: Create GitHub Release
+      - name: إنشاء إصدار على GitHub
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v2.4
-          name: "Leave Balance Calculator v2.4"
+          name: "حاسبة رصيد الإجازات - الإصدار 2.4"
           body: |
-            **Portable Windows executable**  
-            Download `LeaveBalance.exe` and place it in a folder together with the required data files (`employees.xlsx`, `balance_2025.xlsx`, `holidays.xlsx`, `attendance_2026/`, etc.).  
-            Double‑click to start the server on port 8000, then open `http://localhost:8000`.
-
-            Built automatically from the latest code on the `main` branch.
+            **ملف ويندوز تنفيذي محمول**  
+            قم بتحميل `LeaveBalance.exe` وضعه في مجلد واحد مع ملفات البيانات المطلوبة (`employees.xlsx`, `balance_2025.xlsx`, `holidays.xlsx`, `attendance_2026/`، إلخ).  
+            اضغط مرتين لتشغيل الخادم على المنفذ 8000، ثم افتح المتصفح على `http://localhost:8000`.
           files: dist/LeaveBalance.exe
-          draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
