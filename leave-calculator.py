@@ -1,3 +1,4 @@
+cat > "/home/mostafa/Documents/New APP/leave_calculator.py" << 'ENDOFFILE'
 import sys, os, glob, threading, time
 import warnings
 warnings.filterwarnings('ignore')
@@ -59,7 +60,6 @@ def load_all_data():
         employees['Name'] = 'Unknown'
     if 'Title' not in employees.columns:
         employees['Title'] = ''
-    # Keep LOB and S-LOB as they are (do not rename)
     for col in ['LOB', 'S-LOB']:
         if col not in employees.columns:
             employees[col] = ''
@@ -104,16 +104,14 @@ def load_all_data():
         att_list.append(df)
     attendance = pd.concat(att_list, ignore_index=True)
 
-    # fill queue from attendance only if missing (not needed anymore, but keep for Go Live logic)
     if 'queue' in attendance.columns and 'acd_id' in attendance.columns:
         first_att = attendance.sort_values('Date').groupby('acd_id').first().reset_index()
         first_att = first_att[['acd_id', 'queue']]
         employees['acd_str'] = employees['acd_id'].astype(str).str.strip()
         first_att['acd_str'] = first_att['acd_id'].astype(str).str.strip()
         employees = employees.merge(first_att[['acd_str', 'queue']], on='acd_str', how='left', suffixes=('', '_att'))
-        # Go Live calculation uses Queue (from employees or attendance). Keep a unified 'Queue' column for that.
-        employees['Queue'] = employees.get('queue', pd.Series(dtype=str)).fillna('')
-        employees.drop(columns=['queue'], inplace=True, errors='ignore')
+        employees['Queue'] = employees['Queue'].fillna(employees['queue']).fillna('')
+        employees.drop(columns=['queue'], inplace=True)
 
     def calc_go_live(row):
         cert = row.get('certification_date')
@@ -163,19 +161,19 @@ def load_all_data():
     ).reset_index()
     summary_2026['net_used_2026'] = summary_2026['gross_taken'] - summary_2026['excluded_weight']
 
+    # Public holidays earned – using HIRING DATE
     all_hol = attendance.merge(holidays, left_on='Date', right_on='Holiday_Date', how='inner')
-    all_hol = all_hol.merge(employees[['uae_id', 'go_live']], on='uae_id', how='left')
+    all_hol = all_hol.merge(employees[['uae_id', 'hiring_date']], on='uae_id', how='left')
     public_earned = all_hol[
-        (all_hol['Date'] >= all_hol['go_live']) &
+        (all_hol['Date'] >= all_hol['hiring_date']) &
         (all_hol['final_status_clean'].isin(['available'])) &
         (~all_hol['final_status_clean'].isin(not_eligible_list))
     ].groupby('uae_id').size().reset_index(name='public_holidays_earned')
 
     comp_days = attendance[attendance['final_status_clean'] == 'comp'].copy()
-    comp_days = comp_days.merge(employees[['uae_id', 'go_live']], on='uae_id', how='left')
-    comp_used = comp_days[comp_days['Date'] >= comp_days['go_live']].groupby('uae_id').size().reset_index(name='comp_days_used')
+    comp_days = comp_days.merge(employees[['uae_id', 'hiring_date']], on='uae_id', how='left')
+    comp_used = comp_days[comp_days['Date'] >= comp_days['hiring_date']].groupby('uae_id').size().reset_index(name='comp_days_used')
 
-    # Include LOB and S-LOB in emp_master
     emp_master = employees[['uae_id', 'hiring_date', 'lwd', 'go_live', 'certification_date',
                             'LOB', 'S-LOB', 'acd_id', 'Name', 'Title']].copy()
     emp_master['calc_date'] = emp_master['lwd'].fillna(pd.Timestamp(CUTOFF_DATE))
@@ -384,7 +382,6 @@ async def home(request: Request):
     </head>
     <body>
 
-    <!-- Toast container -->
     <div id="toast" class="toast hidden"></div>
 
     <div class="card">
@@ -418,21 +415,18 @@ async def home(request: Request):
     </div>
 
     <script>
-    // ========== Welcome Toast (generic, 7 seconds) ==========
     function showToast(message) {
       const toast = document.getElementById("toast");
       toast.textContent = message;
       toast.classList.remove("hidden");
-      void toast.offsetWidth; // reflow to restart animation
+      void toast.offsetWidth;
       toast.style.animation = "slideIn 0.5s ease, fadeOut 0.5s 7s ease forwards";
     }
 
-    // Show welcome toast on load
     window.addEventListener("DOMContentLoaded", () => {
       showToast("👋 Welcome to the Leave Balance Calculator!");
     });
 
-    // ========== Main App Functions ==========
     let currentUid = '';
 
     async function calculate() {
@@ -452,7 +446,7 @@ async def home(request: Request):
       currentUid = data.uae_id;
 
       let report = `╔══════════════════════════════════════╗
-║   Leave Balance Report - Law 14/2025 ║
+║   Leave Balance Report - Law 14/2025  ║
 ╚══════════════════════════════════════╝
 👤 UAE ID      : ${data.uae_id}
 🆔 ACD ID      : ${data.acd_id ?? '?'}
@@ -516,7 +510,7 @@ async def home(request: Request):
         fetch('/shutdown');
         setTimeout(() => {
           window.close();
-        }, 27000); // 27 seconds
+        }, 27000);
       }
     }
     </script>
@@ -540,14 +534,14 @@ async def holiday_details(uae_id: str):
     emp = find_employee(uae_id)
     if emp is None:
         return JSONResponse(status_code=404, content={"error": "Employee not found"})
-    go_live = emp['go_live']
+    hiring_date = emp['hiring_date']
     details = []
     for _, hol in holidays_df.iterrows():
         hd = hol['Holiday_Date']
         ed = attendance_df[(attendance_df['uae_id'] == emp['uae_id']) & (attendance_df['Date'] == hd)]
         is_earned = False
-        if pd.isna(go_live) or hd < go_live:
-            reason, status = "Before Go Live", "-"
+        if pd.isna(hiring_date) or hd < hiring_date:
+            reason, status = "Before Hiring Date", "-"
         elif len(ed) == 0:
             reason, status = "No record", "Absent"
         else:
@@ -587,4 +581,5 @@ async def shutdown():
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("leave_calculator:app", host="0.0.0.0", port=8000, reload=False)
+ENDOFFILE
